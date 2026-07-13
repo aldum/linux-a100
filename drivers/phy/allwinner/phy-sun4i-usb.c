@@ -335,7 +335,14 @@ static int sun4i_usb_phy_init(struct phy *_phy)
 			val &= ~PHY_CTL_SIDDQ;
 			writel(val, data->base + data->cfg->phyctl_offset);
 		}
-	} else {
+	}
+
+	/*
+	 * A100 uses the OLD PHY and needs explicit HS tuning
+	 * Gate on disc_thresh so only A100/H616 (disc_thresh set + siddq_in_base)
+	 * get it; D1/H6 (disc_thresh=0, different new-PHY) stay unaffected.
+	 */
+	if (!data->cfg->siddq_in_base || data->cfg->disc_thresh) {
 		/* Enable USB 45 Ohm resistor calibration */
 		if (phy->index == 0)
 			sun4i_usb_phy_write(phy, PHY_RES45_CAL_EN, 0x01, 1);
@@ -346,6 +353,9 @@ static int sun4i_usb_phy_init(struct phy *_phy)
 		/* Disconnect threshold adjustment */
 		sun4i_usb_phy_write(phy, PHY_DISCON_TH_SEL,
 				    data->cfg->disc_thresh, 2);
+
+		dev_info(&_phy->dev, "A100 HS PHY tuning applied (phy%d)\n",
+			 phy->index);
 	}
 
 	sun4i_usb_phy_passby(phy, 1);
