@@ -271,7 +271,9 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 
 	watchdog_init_timeout(&sunxi_wdt->wdt_dev, timeout, dev);
 	watchdog_set_nowayout(&sunxi_wdt->wdt_dev, nowayout);
-	watchdog_set_restart_priority(&sunxi_wdt->wdt_dev, 128);
+	/* 130 > PSCI's 129: vendor BL31 PSCI SYSTEM_RESET hangs on this chainloaded
+	 * A133, so the wdt handler must outrank it or reboot never resets. */
+	watchdog_set_restart_priority(&sunxi_wdt->wdt_dev, 130);
 
 	watchdog_set_drvdata(&sunxi_wdt->wdt_dev, sunxi_wdt);
 
