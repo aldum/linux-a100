@@ -8,6 +8,8 @@
 #include <dt-bindings/clock/sun50i-a100-r-ccu.h>
 #include <dt-bindings/reset/sun50i-a100-ccu.h>
 #include <dt-bindings/reset/sun50i-a100-r-ccu.h>
+#include <dt-bindings/clock/sun8i-de2.h>
+#include <dt-bindings/reset/sun8i-de2.h>
 
 / {
 	interrupt-parent = <&gic>;
@@ -87,6 +89,12 @@
 		#clock-cells = <0>;
 	};
 
+	de: display-engine {
+		compatible = "allwinner,sun50i-a100-display-engine";
+		allwinner,pipelines = <&mixer0>;
+		status = "disabled";
+	};
+
 	timer {
 		compatible = "arm,armv8-timer";
 		interrupts = <GIC_PPI 13
@@ -104,6 +112,39 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges = <0 0 0 0x3fffffff>;
+
+		syscon: syscon@3000000 {
+			compatible = "allwinner,sun50i-a100-system-control",
+				     "allwinner,sun50i-a64-system-control";
+			reg = <0x03000000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			sram_a1: sram@20000 {
+				compatible = "mmio-sram";
+				reg = <0x00020000 0x4000>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges = <0 0x00020000 0x4000>;
+			};
+
+			sram_c: sram@24000 {
+				compatible = "mmio-sram";
+				reg = <0x024000 0x21000>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges = <0 0x024000 0x21000>;
+			};
+
+			sram_a2: sram@100000 {
+				compatible = "mmio-sram";
+				reg = <0x0100000 0x14000>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges = <0 0x0100000 0x14000>;
+			};
+		};
 
 		ccu: clock@3001000 {
 			compatible = "allwinner,sun50i-a100-ccu";
@@ -470,6 +511,113 @@
 			phys = <&usbphy 1>;
 			phy-names = "usb";
 			status = "disabled";
+		};
+
+		display_clocks: clock-controller@6000000 {
+			compatible = "allwinner,sun50i-a100-de2-clk";
+			reg = <0x06000000 0x10000>;
+			clocks = <&ccu CLK_BUS_DE>,
+				 <&ccu CLK_DE>;
+			clock-names = "bus", "mod";
+			resets = <&ccu RST_BUS_DE>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		mixer0: mixer@6100000 {
+			compatible = "allwinner,sun50i-a100-de2-mixer-0";
+			reg = <0x06100000 0x100000>;
+			clocks = <&display_clocks CLK_BUS_MIXER0>,
+				 <&display_clocks CLK_MIXER0>;
+			clock-names = "bus", "mod";
+			resets = <&display_clocks RST_MIXER0>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				mixer0_out: port@1 {
+					reg = <1>;
+
+					mixer0_out_tcon_top_mixer0: endpoint {
+						remote-endpoint = <&tcon_top_mixer0_in_mixer0>;
+					};
+				};
+			};
+		};
+
+		tcon_top: tcon-top@6510000 {
+			compatible = "allwinner,sun50i-a100-tcon-top";
+			reg = <0x06510000 0x1000>;
+			clocks = <&ccu CLK_BUS_DPSS_TOP0>;
+			clock-names = "bus";
+			clock-output-names = "tcon-top-dsi";
+			resets = <&ccu RST_BUS_DPSS_TOP0>;
+			#clock-cells = <1>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				tcon_top_mixer0_in: port@0 {
+					reg = <0>;
+
+					tcon_top_mixer0_in_mixer0: endpoint {
+						remote-endpoint = <&mixer0_out_tcon_top_mixer0>;
+					};
+				};
+
+				tcon_top_mixer0_out: port@1 {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					reg = <1>;
+
+					/* endpoint reg encodes TCON index for the tcon-top mux; 0 = tcon_lcd0 */
+					tcon_top_mixer0_out_tcon_lcd0: endpoint@0 {
+						reg = <0>;
+						remote-endpoint = <&tcon_lcd0_in_tcon_top_mixer0>;
+					};
+				};
+
+				tcon_top_hdmi_in: port@4 {
+					reg = <4>;
+				};
+
+				tcon_top_hdmi_out: port@5 {
+					reg = <5>;
+				};
+			};
+		};
+
+		tcon_lcd0: lcd-controller@6511000 {
+			compatible = "allwinner,sun50i-a100-tcon-lcd";
+			reg = <0x06511000 0x1000>;
+			/* SPI 69 from vendor disp block order (tcon0,tcon1,dsi0); try 68/70 if vblank stalls */
+			interrupts = <GIC_SPI 69 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_BUS_TCON_LCD>,
+				 <&ccu CLK_TCON_LCD>;
+			clock-names = "ahb", "tcon-ch0";
+			clock-output-names = "tcon-pixel-clock";
+			resets = <&ccu RST_BUS_TCON_LCD>;
+			reset-names = "lcd";
+			#clock-cells = <0>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				tcon_lcd0_in: port@0 {
+					reg = <0>;
+
+					tcon_lcd0_in_tcon_top_mixer0: endpoint {
+						remote-endpoint = <&tcon_top_mixer0_out_tcon_lcd0>;
+					};
+				};
+
+				tcon_lcd0_out: port@1 {
+					reg = <1>;
+				};
+			};
 		};
 
 		r_ccu: clock@7010000 {
