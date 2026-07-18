@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Phase-1 (console-only) device tree for GreatAsia TK-E720.
+ * Allwinner A133 (sun50i-a100 compatible) + AXP717/AXP2202 PMIC.
+ * UART + MMC + USB + PMIC only. NO display yet (phase 2 adds panel/TCON/DE2).
+ *
+ * AXP717 regulator rails are educated guesses pending vendor-DTB extraction.
+ * All rails carrying always-on MUST stay always-on or the kernel hangs when it
+ * disables "unused" regulators during late init.
+ */
+
+/dts-v1/;
+
+#include "sun50i-a100.dtsi"
+#include "sun50i-a100-cpu-opp.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	model = "GreatAsia TK-E720";
+	compatible = "greatasia,tk-e720", "allwinner,sun50i-a100";
+
+	aliases {
+		serial0 = &uart0;
+		mmc0 = &mmc0;
+		mmc2 = &mmc2;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/*
+	 * Vendor secure-world memory map (from vendor.dts reserved-memory):
+	 *   bl31          @ 0x48000000, size 0x1000000 (16 MiB)  ← BL31 + OP-TEE
+	 *   reboot_escrow @ 0x50000000, size 0x10000   (64 KiB, no-map, pmem)
+	 *
+	 * ROOT CAUSE of session-long instability (Oracle-confirmed): earlier this
+	 * node reserved ONLY 2 MiB @ 0x40000000 — WRONG address AND size. Vendor
+	 * BL31 (+ resident OP-TEE, linaro,optee-tz) actually lives at 0x48000000
+	 * (16 MiB), 128 MiB into DRAM. The 0x40000000 reservation protected some
+	 * small thing at DRAM base (SCP/ARISC trampoline or CPU spin-table — it DID
+	 * fix an earlier SMP IPI panic, so KEEP it) but left the real 16 MiB secure
+	 * region unprotected. Under heavy allocation (dd 200MB, vim, apk) the buddy
+	 * allocator reached 0x48000000 → pages landed in live BL31/OP-TEE memory →
+	 * mutual corruption → free_page_and_swap_cache NULL-deref on secondary CPU,
+	 * random userspace SEGV/illegal-instruction, intermittent __secondary_switched
+	 * boot panics, transient oopses. All ONE root cause.
+	 * Vendor didn't mark bl31 no-map, but mainline REQUIRES no-map here.
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* Small carveout at DRAM base — fixed earlier SMP IPI panic. KEEP. */
+		secmon@40000000 {
+			reg = <0x0 0x40000000 0x0 0x200000>;
+			no-map;
+		};
+
+		/* Vendor BL31 (Trusted Firmware-A) + resident OP-TEE secure world.
+		 * OP-TEE TZASC-protects a CONTIGUOUS region at 0x48000000, LARGER than
+		 * the vendor-DT-declared 16 MiB. Confirmed contiguous (top-of-DRAM
+		 * reserved cluster is CMA @0xbba00000, not OP-TEE). Empirical: 16 MiB →
+		 * light apk works, heavy segfaults; 32 MiB → mc OK, build-base SEGV;
+		 * 128 MiB (0x48000000-0x4fffffff) → build-base passes. Reservable since
+		 * initrd dropped + dtb moved to 0x50100000. Stops at reboot_escrow
+		 * @0x50000000. Losing 128 MiB of 2 GiB is trivial for dev. */
+		bl31@48000000 {
+			reg = <0x0 0x48000000 0x0 0x8000000>;   /* 128 MiB (0x48000000-0x4fffffff) — size that passed build-base */
+			no-map;
+		};
+
+		/* reboot escrow / pmem region (vendor uses for reboot handoff) */
+		reboot_escrow@50000000 {
+			reg = <0x0 0x50000000 0x0 0x10000>;
+			no-map;
+		};
+	};
+};
+
+&cpu0 {
+	cpu-supply = <&reg_dcdc1>;
+};
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pb_pins>;
+	status = "okay";
+};
+
+/* SD card (SMHC0) */
+&mmc0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc0_pins>;
+	vmmc-supply = <&reg_cldo3>;
+	/* cd-gpios PF6 unverified/glitchy — poll instead; card is the rootfs, always present */
+	broken-cd;
+	bus-width = <4>;
+	status = "okay";
+};
+
+/* eMMC (SMHC2) */
+&mmc2 {
+	vmmc-supply = <&reg_cldo3>;
+	vqmmc-supply = <&reg_aldo3>;
+	cap-mmc-hw-reset;
+	non-removable;
+	bus-width = <8>;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	status = "okay";
+};
+
+&pio {
+	vcc-pb-supply = <&reg_cldo3>;
+	vcc-pc-supply = <&reg_aldo3>;
+	vcc-pf-supply = <&reg_cldo3>;
+	vcc-pg-supply = <&reg_cldo3>;
+	vcc-ph-supply = <&reg_cldo3>;
+};
+
+/* AXP717 (= AXP2202) on R_I2C0 @ 0x34.
+ * Voltage ranges are chip-fixed: DCDC1/3 max 1.54V, DCDC2 max ~3.4V,
+ * (A/B/C)LDO 0.5–3.5V. DCDC1 CANNOT do 3.3V — 3.3V I/O comes from a CLDO.
+ * Rail→function mirrors the Anbernic RG35XX (same PMIC); verify against the
+ * vendor DTB (extract from eMMC boot_a) before trusting for production.
+ */
+&r_i2c0 {
+	status = "okay";
+
+	axp717: pmic@34 {
+		compatible = "x-powers,axp717";
+		reg = <0x34>;
+		interrupt-parent = <&r_intc>;
+		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+		#interrupt-cells = <1>;
+		interrupt-controller;
+
+		regulators {
+			reg_dcdc1: dcdc1 {
+				regulator-name = "vdd-cpu";
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <1160000>;
+				regulator-always-on;
+			};
+
+			reg_dcdc2: dcdc2 {
+				regulator-name = "vdd-gpu-sys";
+				regulator-min-microvolt = <940000>;
+				regulator-max-microvolt = <940000>;
+				regulator-always-on;
+			};
+
+			reg_dcdc3: dcdc3 {
+				regulator-name = "vdd-dram";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1100000>;
+				regulator-always-on;
+			};
+
+			reg_aldo3: aldo3 {
+				regulator-name = "vcc-1v8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-always-on;
+			};
+
+			reg_cldo3: cldo3 {
+				regulator-name = "vcc-io";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+			};
+
+			/* WiFi (XR829) + BT power rail. NOT always-on: left as mmc1
+			 * vmmc so the mmc core power-cycles it at probe, giving the
+			 * chip a clean VDD power-on edge (its POR needs it). PG pads
+			 * are powered separately by cldo3 (vcc-io, always-on). */
+			reg_bldo1: bldo1 {
+				regulator-name = "vcc-wifi-io";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+			};
+		};
+	};
+};
+
+&usb_otg {
+	dr_mode = "otg";
+	status = "okay";
+};
+
+&usbphy {
+	status = "okay";
+};
+
+/*
+ * Two physical USB-A host ports. On A100 these are EHCI2.0 + OHCI1.1 companion
+ * controllers, NOT musb. PHY0 (usbphy port 0) is shared with usb_otg/musb;
+ * PHY1 (port 1) is host-only.
+ *
+ * STOPGAP (DEFERRED, NOT abandoned): EHCI (USB2.0 High-Speed, 480Mbps) is
+ * DISABLED because HS transfers corrupt kernel memory (bad HS PHY eye — vendor
+ * PHY tuning didn't fix; likely missing USB clock/PLL/LDO setup or EHCI
+ * descriptor-coherency issue, under investigation). OHCI (Full-Speed, 12Mbps)
+ * is STABLE, so we run USB at full-speed only: usable for ssh/git/apk, just
+ * slow. RE-ENABLE ehci0/ehci1 once the HS bug is fixed (see board-notes USB
+ * PHY/EHCI section). The PHY HS-tuning patch in phy-sun4i-usb.c stays in place.
+ */
+&ehci0 {
+	status = "disabled";	/* HS corrupts — stopgap, re-enable after HS fix */
+};
+
+&ohci0 {
+	status = "okay";
+};
+
+&ehci1 {
+	status = "disabled";	/* HS corrupts — stopgap, re-enable after HS fix */
+};
+
+&ohci1 {
+	status = "okay";
+};
+
+/*
+ * ===========================================================================
+ * Onboard WiFi + BT = XRadio XR829 (SDIO WiFi @ mmc1, BT @ UART1)
+ * ===========================================================================
+ * Driver: github.com/YuzukiHD/Xradio-XR829 (CONFIG_XR829_WLAN=m; SDIO ID
+ * 0x0A9E:0x2282). Firmware: fw_xr829.bin/sdd_xr829.bin/boot_xr829.bin (extracted).
+ *
+ * MAINLINE approach (NOT vendor sunxi-rfkill — that driver isn't upstream):
+ * power/enable via mmc-pwrseq-simple (asserts wlan_regon PL5 + power_en PL7,
+ * then releases). SDIO card enumerates on mmc1; the xr829 SDIO driver binds by
+ * ID and loads firmware. Host-wake OOB IRQ on PL6 via r_pio.
+ * ⚠ DRIVER CAVEAT: YuzukiHD wlan/platform.c calls sunxi_wlan_set_power() (vendor
+ * symbol, absent here). Either (a) patch platform.c to drop those externs and
+ * rely on mmc-pwrseq (chip is already powered when the SDIO driver probes), or
+ * (b) build with the sunxi-wlan shim. DT below is the mainline (mmc-pwrseq) form.
+ *
+ * Wiring (verified vendor.dts): SDIO mmc1; wlan_regon=PL5, wlan_hostwake=PL6,
+ * power_en=PL7, power=bldo1 3.3V. PL bank = &r_pio (bank 0). BT: UART1, later.
+ */
+
+/ {
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		/* Only wlan_regon (PL5) is pulsed by pwrseq; power_en (PL7) is held
+		 * enabled from boot via a gpio-hog on &r_pio, so power precedes
+		 * regon (the vendor rfkill/wlan drivers sequenced power_en->regon,
+		 * which mmc-pwrseq-simple can't do when both share reset-gpios).
+		 * ACTIVE_LOW => pwrseq release drives regon HIGH = radio enabled. */
+		reset-gpios = <&r_pio 0 5 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <1000>;
+		power-off-delay-us = <200>;
+	};
+};
+
+/* Hold wlan power_en (PL7) enabled from boot so the chip is powered before
+ * wlan_regon (PL5) is pulsed by wifi_pwrseq (vendor sequenced power_en->regon). */
+&r_pio {
+	wlan_power_en_hog {
+		gpio-hog;
+		gpios = <0 7 GPIO_ACTIVE_HIGH>;	/* PL7 = power_en */
+		output-high;
+		line-name = "wlan-power-en";
+	};
+};
+
+/* SDIO host for XR829 WiFi */
+&mmc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc1_pins>;
+	vmmc-supply = <&reg_bldo1>;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	bus-width = <4>;
+	non-removable;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	max-frequency = <50000000>;
+	no-sd;
+	no-mmc;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	xr829: wifi@1 {
+		reg = <1>;
+		compatible = "xradio,xr829";
+		interrupt-parent = <&r_pio>;
+		interrupts = <0 6 IRQ_TYPE_LEVEL_HIGH>;	/* PL6 host-wake */
+		interrupt-names = "host-wake";
+	};
+};
