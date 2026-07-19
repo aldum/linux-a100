@@ -373,6 +373,8 @@
 		enable-gpios = <&pio 3 22 GPIO_ACTIVE_HIGH>;	/* PD22 */
 		width-mm = <153>;
 		height-mm = <91>;
+		/* panel is mounted 180° rotated (netbook) — flips fbcon/logo upright */
+		rotation = <180>;
 
 		panel-timing {
 			clock-frequency = <53000000>;
