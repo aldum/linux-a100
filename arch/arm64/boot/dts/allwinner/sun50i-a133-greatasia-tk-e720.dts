@@ -296,3 +296,105 @@
 		interrupt-names = "host-wake";
 	};
 };
+
+/*
+ * ===========================================================================
+ * Display (phase 2): RGB parallel panel — 1024x600 RGB666 @ 53 MHz
+ * ===========================================================================
+ * SoC pipeline (in sun50i-a100.dtsi): DE2 mixer0 -> tcon_top -> tcon_lcd0
+ *   -> sun4i_rgb encoder -> PD "lcd0" pins -> panel.
+ * Spec from vendor DTB lcd0@1c0c000 (lcd_if=0 => RGB, not LVDS/DSI): 53 MHz,
+ *   1024x600, RGB666. reset/enable=PD22, backlight-enable=PB8,
+ *   rails cldo3 (I/O, already always-on) + cldo4 (panel VCC).
+ * Notes (Oracle-reviewed; NOT yet tested on hardware — build-box + on-device):
+ *  - RGB666 width is enforced by the pinmux: the A100 "lcd0" bank-D function
+ *    only exposes the 6 MSBs/channel (D2-7/D10-15/D18-23), so PD0-21 = 18 data
+ *    + CLK/DE/HSYNC/VSYNC. PD22 has no lcd0 function (free for the reset GPIO).
+ *  - panel-dpi sets no bus_format, so TCON FRC dithering stays off (mild
+ *    gradient banding, non-fatal). For dithering, later add a panel-simple
+ *    entry with .bus_format=RGB666_1X18 / .bpc=6 / connector_type=DPI.
+ *  - sync polarities inferred (vendor DT exposes none): hsync/vsync active-low,
+ *    DE active-high, pixelclk posedge. If the image rolls/shifts, flip
+ *    pixelclk-active to 0 first, then the sync actives.
+ *  - tcon_lcd0 IRQ is GIC_SPI 69 in the dtsi; try 68/70 if vblank stalls.
+ * Build-box defconfig: DRM_SUN4I, DRM_SUN8I_MIXER, DRM_SUN8I_TCON_TOP,
+ *   DRM_PANEL_SIMPLE=y, CMA/DMA_CMA (>=16 MiB).
+ */
+
+&axp717 {
+	regulators {
+		reg_cldo4: cldo4 {
+			/* panel VCC (vendor lcd_power2). Vendor DT gives only a
+			 * 0.5-3.5V range; 3.3V is the usual panel supply -- CONFIRM
+			 * against the panel / measure the rail before trusting. */
+			regulator-name = "vcc-panel";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+	};
+};
+
+&de {
+	status = "okay";
+};
+
+&pio {
+	lcd_rgb666_pins: lcd-rgb666-pins {
+		pins = "PD0", "PD1", "PD2", "PD3", "PD4",
+		       "PD5", "PD6", "PD7", "PD8", "PD9",
+		       "PD10", "PD11", "PD12", "PD13",
+		       "PD14", "PD15", "PD16", "PD17",
+		       "PD18", "PD19", "PD20", "PD21";
+		function = "lcd0";
+	};
+};
+
+&tcon_lcd0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&lcd_rgb666_pins>;
+};
+
+&tcon_lcd0_out {
+	tcon_lcd0_out_rgb: endpoint {
+		remote-endpoint = <&panel_input>;
+	};
+};
+
+/ {
+	panel {
+		compatible = "panel-dpi";
+		power-supply = <&reg_cldo4>;
+		backlight = <&backlight>;
+		enable-gpios = <&pio 3 22 GPIO_ACTIVE_HIGH>;	/* PD22 */
+		width-mm = <153>;
+		height-mm = <91>;
+
+		panel-timing {
+			clock-frequency = <53000000>;
+			hactive = <1024>;
+			vactive = <600>;
+			hfront-porch = <160>;
+			hback-porch = <140>;
+			hsync-len = <20>;
+			vfront-porch = <12>;
+			vback-porch = <18>;
+			vsync-len = <5>;
+			hsync-active = <0>;
+			vsync-active = <0>;
+			de-active = <1>;
+			pixelclk-active = <1>;
+		};
+
+		port {
+			panel_input: endpoint {
+				remote-endpoint = <&tcon_lcd0_out_rgb>;
+			};
+		};
+	};
+
+	backlight: backlight {
+		compatible = "gpio-backlight";
+		gpios = <&pio 1 8 GPIO_ACTIVE_HIGH>;	/* PB8 = lcd_bl_en */
+		default-on;
+	};
+};
