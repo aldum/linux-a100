@@ -175,14 +175,19 @@
 				regulator-always-on;
 			};
 
-			/* WiFi (XR829) + BT power rail. NOT always-on: left as mmc1
-			 * vmmc so the mmc core power-cycles it at probe, giving the
-			 * chip a clean VDD power-on edge (its POR needs it). PG pads
-			 * are powered separately by cldo3 (vcc-io, always-on). */
+			/* WiFi (XR829) VDD + BT rail. MUST be always-on: the vendor
+			 * bring-up order is VDD -> power_en -> regon, but power_en
+			 * (PL7) is driven HIGH from boot by the gpio-hog below. If
+			 * this rail is left to the mmc core (enabled only during a
+			 * card-init attempt, else dropped by "disable unused
+			 * regulators"), the chip sits with enable-high + VDD-off and
+			 * never answers CMD5. always-on keeps VDD up before power_en.
+			 * PG pads are powered separately by cldo3 (vcc-io). */
 			reg_bldo1: bldo1 {
 				regulator-name = "vcc-wifi-io";
 				regulator-min-microvolt = <3300000>;
 				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
 			};
 		};
 	};
@@ -260,14 +265,19 @@
 	};
 };
 
-/* Hold wlan power_en (PL7) enabled from boot so the chip is powered before
- * wlan_regon (PL5) is pulsed by wifi_pwrseq (vendor sequenced power_en->regon). */
 &r_pio {
 	wlan_power_en_hog {
 		gpio-hog;
 		gpios = <0 7 GPIO_ACTIVE_HIGH>;	/* PL7 = power_en */
 		output-high;
 		line-name = "wlan-power-en";
+	};
+
+	wlan_regon_hog {
+		gpio-hog;
+		gpios = <0 5 GPIO_ACTIVE_HIGH>;	/* PL5 = wlan_regon */
+		output-high;
+		line-name = "wlan-regon";
 	};
 };
 
@@ -276,7 +286,6 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&mmc1_pins>;
 	vmmc-supply = <&reg_bldo1>;
-	mmc-pwrseq = <&wifi_pwrseq>;
 	bus-width = <4>;
 	non-removable;
 	cap-sdio-irq;
